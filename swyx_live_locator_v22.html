@@ -1,0 +1,544 @@
+
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+
+  <meta
+    name="viewport"
+    content="width=device-width, initial-scale=1"
+  >
+
+  <title>Swyx Live Customer Locator V2.2</title>
+
+  <!-- Leaflet stylesheet -->
+  <link
+    rel="stylesheet"
+    href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css"
+  >
+
+  <style>
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      font-family: Arial, sans-serif;
+    }
+
+    body {
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+      background: #ffffff;
+    }
+
+    /* Search toolbar */
+    .toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      padding: 10px;
+      background: #f7f7fa;
+      flex: 0 0 auto;
+    }
+
+    #query {
+      flex: 1 1 180px;
+      min-width: 0;
+      padding: 10px;
+      border: 1px solid #aaa;
+      border-radius: 6px;
+      font-size: 14px;
+    }
+
+    button {
+      padding: 10px 16px;
+      border: none;
+      border-radius: 6px;
+      background: #522583;
+      color: white;
+      cursor: pointer;
+      font-size: 14px;
+    }
+
+    button:disabled {
+      opacity: 0.5;
+      cursor: wait;
+    }
+
+    /* Status message */
+    #status {
+      flex: 0 0 auto;
+      padding: 6px 12px;
+      font-size: 12px;
+      min-height: 26px;
+      max-height: 56px;
+      overflow: auto;
+    }
+
+    /* Address search results */
+    #results {
+      flex: 0 1 auto;
+      max-height: 120px;
+      overflow-y: auto;
+      overflow-x: hidden;
+    }
+
+    #results button {
+      display: block;
+      width: 100%;
+      padding: 9px 12px;
+      text-align: left;
+      color: #222;
+      background: white;
+      border: none;
+      border-bottom: 1px solid #ddd;
+      border-radius: 0;
+      font-size: 12px;
+      overflow-wrap: anywhere;
+    }
+
+    #results button:hover {
+      background: #f0eaf6;
+    }
+
+    /* Map container */
+    #map {
+      position: relative;
+      display: block;
+      flex: 1 1 auto;
+      width: 100%;
+      min-height: 0;
+      overflow: hidden;
+      background: #e5e5e5;
+    }
+
+    /* Leaflet positioning safeguards */
+    .leaflet-container {
+      position: relative;
+      overflow: hidden;
+    }
+
+    .leaflet-pane,
+    .leaflet-tile,
+    .leaflet-marker-icon,
+    .leaflet-marker-shadow,
+    .leaflet-tile-container,
+    .leaflet-pane > svg,
+    .leaflet-pane > canvas {
+      position: absolute;
+      left: 0;
+      top: 0;
+    }
+
+    .leaflet-tile {
+      width: 256px;
+      height: 256px;
+      max-width: none !important;
+      max-height: none !important;
+    }
+
+    .leaflet-map-pane,
+    .leaflet-tile-pane,
+    .leaflet-overlay-pane {
+      position: absolute;
+    }
+
+    /* Footer */
+    .attribution {
+      flex: 0 0 auto;
+      padding: 4px 10px;
+      font-size: 10px;
+      background: #ffffff;
+    }
+  </style>
+</head>
+
+<body>
+
+  <!-- Address search -->
+  <form class="toolbar" id="searchForm">
+    <input
+      id="query"
+      type="search"
+      minlength="3"
+      maxlength="180"
+      placeholder="Street, postcode, city or business"
+      aria-label="Search address"
+      required
+    >
+
+    <button id="searchButton" type="submit">
+      Search
+    </button>
+  </form>
+
+  <div class="toolbar" style="border-top:1px solid #ddd">
+    <label>Customer CSV <input id="csv" type="file" accept=".csv,text/csv"></label>
+    <form id="callerForm" style="display:flex;flex-wrap:wrap;gap:8px;flex:1">
+      <input id="caller" type="tel" placeholder="Incoming telephone number" aria-label="Incoming telephone number" required style="flex:1;min-width:130px;padding:8px">
+      <button type="submit">Locate customer</button><button type="button" id="resetCustomers">Show all</button>
+    </form>
+  </div>
+  <div id="customerStatus" role="status" style="padding:4px 12px;font-size:12px">Select your local customer CSV.</div>
+  <div id="tileStatus" role="status" style="padding:4px 12px;font-size:11px">Map diagnostics: initializing</div>
+  <!-- Search status -->
+  <div
+    id="status"
+    role="status"
+    aria-live="polite"
+  >
+    Enter an address to search.
+  </div>
+
+  <!-- Search results -->
+  <div id="results"></div>
+
+  <!-- Interactive map -->
+  <div
+    id="map"
+    aria-label="Interactive map"
+  ></div>
+
+  <!-- Attribution -->
+  <div class="attribution">
+    Map data © OpenStreetMap contributors.
+    Search powered by Nominatim.
+  </div>
+
+  <!-- Leaflet JavaScript -->
+  <script
+    src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js">
+  </script>
+
+  <script>
+    'use strict';
+
+    const statusElement =
+      document.getElementById('status');
+
+    const resultsElement =
+      document.getElementById('results');
+
+    const searchButton =
+      document.getElementById('searchButton');
+
+    const searchInput =
+      document.getElementById('query');
+
+    const mapElement =
+      document.getElementById('map');
+
+    // Initialize map centered on the Netherlands.
+    const map = L.map('map', {
+      zoomControl: true
+    }).setView([52.1326, 5.2913], 7);
+
+    // OpenStreetMap tile layer.
+    const baseTiles = L.tileLayer(
+      'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+      {
+        maxZoom: 19,
+        attribution:
+          '&copy; <a href="https://www.openstreetmap.org/copyright">' +
+          'OpenStreetMap</a> contributors'
+      }
+    );
+    let tileOK = 0, tileFail = 0;
+    function tileReport() {
+      document.getElementById('tileStatus').textContent = `Leaflet active | Tiles loaded: ${tileOK} | Tile errors: ${tileFail}`;
+    }
+    baseTiles.on('tileload', () => { tileOK++; tileReport(); });
+    baseTiles.on('tileerror', () => { tileFail++; tileReport(); });
+    baseTiles.addTo(map);
+    tileReport();
+
+    let marker = null;
+    let lastRequest = 0;
+    let resizeScheduled = false;
+
+    // Refresh map size after Swyx widget resizing.
+    function refreshMapSize() {
+      if (
+        mapElement.clientWidth === 0 ||
+        mapElement.clientHeight === 0
+      ) {
+        return;
+      }
+
+      map.invalidateSize({
+        animate: false,
+        pan: false,
+        debounceMoveend: true
+      });
+    }
+
+    function scheduleMapRefresh() {
+      if (resizeScheduled) {
+        return;
+      }
+
+      resizeScheduled = true;
+
+      requestAnimationFrame(() => {
+        resizeScheduled = false;
+        refreshMapSize();
+      });
+    }
+
+    // Observe widget resizing.
+    if (typeof ResizeObserver !== 'undefined') {
+      const resizeObserver =
+        new ResizeObserver(scheduleMapRefresh);
+
+      resizeObserver.observe(mapElement);
+    }
+
+    // Browser resizing.
+    window.addEventListener(
+      'resize',
+      scheduleMapRefresh
+    );
+
+    // Refresh after the widget becomes visible.
+    document.addEventListener(
+      'visibilitychange',
+      () => {
+        if (!document.hidden) {
+          scheduleMapRefresh();
+          setTimeout(refreshMapSize, 300);
+        }
+      }
+    );
+
+    // Delayed refreshes for embedded browsers.
+    setTimeout(refreshMapSize, 250);
+    setTimeout(refreshMapSize, 750);
+    setTimeout(refreshMapSize, 1500);
+
+    // Display a selected address.
+    function showPlace(place) {
+      const lat = Number(place.lat);
+      const lon = Number(place.lon);
+
+      if (
+        !Number.isFinite(lat) ||
+        !Number.isFinite(lon)
+      ) {
+        return;
+      }
+
+      if (marker) {
+        map.removeLayer(marker);
+      }
+
+      marker = L.marker([lat, lon])
+        .addTo(map)
+        .bindPopup(place.display_name);
+
+      resultsElement.replaceChildren();
+      statusElement.textContent =
+        place.display_name;
+
+      requestAnimationFrame(() => {
+        refreshMapSize();
+        map.setView([lat, lon], 16);
+        marker.openPopup();
+      });
+    }
+
+    // Search addresses using Nominatim.
+    document.getElementById('searchForm')
+      .addEventListener('submit', async (event) => {
+
+        event.preventDefault();
+
+        const query = searchInput.value.trim();
+
+        if (query.length < 3) {
+          return;
+        }
+
+        const wait = Math.max(
+          0,
+          1100 - (Date.now() - lastRequest)
+        );
+
+        searchButton.disabled = true;
+        resultsElement.replaceChildren();
+        statusElement.textContent = 'Searching...';
+
+        scheduleMapRefresh();
+
+        try {
+          // Respect public Nominatim request limits.
+          if (wait) {
+            await new Promise(resolve =>
+              setTimeout(resolve, wait)
+            );
+          }
+
+          lastRequest = Date.now();
+
+          const url = new URL(
+            'https://nominatim.openstreetmap.org/search'
+          );
+
+          url.searchParams.set('q', query);
+          url.searchParams.set('format', 'jsonv2');
+          url.searchParams.set('limit', '5');
+          url.searchParams.set('accept-language', 'en');
+
+          const response = await fetch(
+            url.toString(),
+            {
+              headers: {
+                'Accept': 'application/json'
+              }
+            }
+          );
+
+          if (!response.ok) {
+            throw new Error(
+              'Search service returned ' +
+              response.status
+            );
+          }
+
+          const places = await response.json();
+
+          if (!places.length) {
+            statusElement.textContent =
+              'No matching addresses found.';
+            return;
+          }
+
+          statusElement.textContent =
+            'Select a result:';
+
+          for (const place of places) {
+            const item =
+              document.createElement('button');
+
+            item.type = 'button';
+            item.textContent =
+              place.display_name;
+
+            item.addEventListener(
+              'click',
+              () => showPlace(place)
+            );
+
+            resultsElement.appendChild(item);
+          }
+
+          scheduleMapRefresh();
+
+        } catch (error) {
+          statusElement.textContent =
+            'Address search unavailable. ' +
+            'Check network access or search service availability.';
+
+          console.error(error);
+
+        } finally {
+          searchButton.disabled = false;
+          scheduleMapRefresh();
+        }
+      });
+
+
+    // Local customer lookup; no customer data is uploaded or geocoded.
+    const customerStatus = document.getElementById('customerStatus');
+    const customerLayer = L.layerGroup().addTo(map);
+    let customers = [];
+    function normalizePhone(value) {
+      let n = String(value || '').replace(/\D/g, '');
+      if (n.startsWith('00')) n = n.slice(2);
+      if (n.startsWith('0')) n = '31' + n.slice(1);
+      return n;
+    }
+    function parseCSV(text, delimiter) {
+      const rows = []; let row = [], field = '', quoted = false;
+      text = text.replace(/^\uFEFF/, '');
+      for (let i=0; i<text.length; i++) {
+        const c = text[i];
+        if (c === '"') {
+          if (quoted && text[i+1] === '"') { field += '"'; i++; }
+          else quoted = !quoted;
+        } else if (!quoted && c === delimiter) { row.push(field); field = ''; }
+        else if (!quoted && (c === '\n' || c === '\r')) {
+          if (c === '\r' && text[i+1] === '\n') i++;
+          row.push(field); if (row.some(v => v.trim())) rows.push(row); row = []; field = '';
+        } else field += c;
+      }
+      if (quoted) throw new Error('Unclosed CSV quote');
+      row.push(field); if (row.some(v => v.trim())) rows.push(row);
+      return rows;
+    }
+    function loadCustomers(text) {
+      const rows = parseCSV(text, text.split(/\r?\n/)[0].includes(';') ? ';' : ',');
+      const headers = (rows.shift() || []).map(v => v.trim().toLowerCase());
+      const required = ['name','mobile','address','city','country','latitude','longitude'];
+      if (!required.every(h => headers.includes(h))) throw new Error('CSV must contain: ' + required.join(', '));
+      return rows.map((row, i) => {
+        const c = Object.fromEntries(headers.map((h,j) => [h,(row[j] || '').trim()]));
+        c.phone = normalizePhone(c.mobile);
+        c.lat = Number(c.latitude.replace(',','.')); c.lon = Number(c.longitude.replace(',','.'));
+        if (!c.phone || !c.latitude || !c.longitude || !Number.isFinite(c.lat) || !Number.isFinite(c.lon) || Math.abs(c.lat)>90 || Math.abs(c.lon)>180) throw new Error('Invalid phone or coordinates in CSV row ' + (i+2));
+        return c;
+      });
+    }
+    function drawCustomers(selected = null) {
+      customerLayer.clearLayers();
+      for (const c of customers) {
+        const active = c === selected;
+        const popup = document.createElement('div');
+        const name = document.createElement('strong'); name.textContent = c.name;
+        popup.append(name, document.createElement('br'), document.createTextNode([c.address,c.city,c.country].filter(Boolean).join(', ')));
+        c.pin = L.circleMarker([c.lat,c.lon], {radius:active?12:7,color:active?'#b91c1c':'#1d4ed8',fillColor:active?'#ef4444':'#3b82f6',fillOpacity:0.9,weight:2}).addTo(customerLayer).bindPopup(popup);
+        if (active) c.pin.bringToFront();
+      }
+    }
+    function showAllCustomers() {
+      drawCustomers();
+      if (marker) { map.removeLayer(marker); marker = null; }
+      if (!customers.length) return;
+      customerStatus.textContent = `${customers.length} customers loaded locally.`;
+      requestAnimationFrame(() => { refreshMapSize(); map.fitBounds(customers.map(c=>[c.lat,c.lon]), {padding:[25,25],maxZoom:15,animate:false}); });
+    }
+    document.getElementById('csv').addEventListener('change', async event => {
+      const file = event.target.files[0]; if (!file) return;
+      try { customers = loadCustomers(await file.text()); showAllCustomers(); if (!customers.length) customerStatus.textContent='CSV contains no customers.'; }
+      catch(error) { customers=[]; customerLayer.clearLayers(); customerStatus.textContent=error.message; }
+    });
+    document.getElementById('callerForm').addEventListener('submit', event => {
+      event.preventDefault();
+      const phone = normalizePhone(document.getElementById('caller').value);
+      const matches = customers.filter(c=>c.phone===phone);
+      if (matches.length !== 1) { drawCustomers(); customerStatus.textContent=matches.length?'Multiple customers match this number.':'No matching customer. Check the CSV and number.'; return; }
+      const c = matches[0];
+      if (marker) { map.removeLayer(marker); marker=null; }
+      resultsElement.replaceChildren();
+      drawCustomers(c);
+      customerStatus.textContent = `${c.name} — ${c.address}, ${c.city}`;
+      requestAnimationFrame(()=>{refreshMapSize();map.setView([c.lat,c.lon],16,{animate:false});c.pin.openPopup();});
+    });
+    document.getElementById('resetCustomers').addEventListener('click',showAllCustomers);
+
+    window.addEventListener(
+      'load',
+      scheduleMapRefresh
+    );
+  </script>
+
+</body>
+</html>
